@@ -746,14 +746,20 @@ class TestAtomicUnitsOfWork:
         assert await storage.cancel_instance("missing", "alice") is False
 
 
-def lose_next_response(fake, path="/db/execute"):
-    """The next ``path`` request is applied by the cluster, but its answer never arrives."""
+def lose_next_response(fake, path="/db/execute", sql_containing=None):
+    """The next ``path`` request is applied by the cluster, but its answer never arrives.
+
+    With ``sql_containing``, only a request with a statement containing that text counts.
+    """
     fired = []
 
     def hook(record):
-        if record.path == path and not fired:
-            fired.append(record)
-            raise httpx2.ReadError("connection reset before the response", request=None)
+        if record.path != path or fired:
+            return
+        if sql_containing and not any(sql_containing in sql for sql, _ in record.statements):
+            return
+        fired.append(record)
+        raise httpx2.ReadError("connection reset before the response", request=None)
 
     fake.after_request.append(hook)
     return fired
@@ -886,6 +892,32 @@ class TestAmbiguousOutcomes:
 
         assert lost, "the injected failure never fired"
         assert fake.table_rows("SELECT status FROM workflow_instances") == [("completed",)]
+
+    async def test_registering_a_definition_whose_response_was_lost_is_repeated(
+        self, fake, storage
+    ):
+        """Every node registers its workflows when it starts; losing that answer must not stop it."""
+        lost = lose_next_response(fake)
+
+        await storage.upsert_workflow_definition("fresh_wf", "hash-1", "source")
+
+        assert lost, "the injected failure never fired"
+        assert fake.table_rows(
+            "SELECT source_code FROM workflow_definitions WHERE workflow_name = 'fresh_wf'"
+        ) == [("source",)]
+
+    async def test_recording_the_schema_version_whose_response_was_lost_is_repeated(self, fake):
+        engine = create_rqlite_engine(
+            "rqlite://localhost:4001", connect_args={"transport": fake.transport()}
+        )
+        storage = RqliteStorage(engine)
+        lost = lose_next_response(fake, sql_containing="INSERT INTO schema_version")
+
+        await storage.initialize()
+
+        assert lost, "the injected failure never fired"
+        assert fake.table_rows("SELECT count(*) FROM schema_version") == [(1,)]
+        await storage.close()
 
     async def test_creating_an_instance_whose_response_was_lost_is_not_repeated_into_a_collision(
         self, fake, storage

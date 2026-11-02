@@ -74,6 +74,7 @@ _LOST_RESPONSE_ATTEMPTS = (
 # Writes that set or delete rows to a fixed outcome: doing one twice leaves the same state, so a worker
 # may safely repeat it when the answer to the first attempt was lost. Deliberately absent: anything that
 # inserts (a repeat collides or duplicates) or counts (``mark_outbox_failed`` adds 1 to retry_count).
+# These wrap the base class's methods; the upserts RqliteStorage overrides retry themselves.
 _IDEMPOTENT_WRITES = (
     "update_instance_status",
     "update_instance_activity",
@@ -233,22 +234,27 @@ class RqliteStorage(SQLAlchemyStorage):
 
         Every node runs this when it starts. The base class counts the rows and then inserts, so
         nodes booting together on an empty cluster all see "empty" and all but one fail on the
-        primary key. ``INSERT ... WHERE NOT EXISTS`` decides in the same statement it writes.
+        primary key. ``INSERT ... WHERE NOT EXISTS`` decides in the same statement it writes, and
+        a repeat after it applied inserts nothing, so a lost response is retried.
         """
-        async with AsyncSession(self.engine) as session:
-            await session.execute(
-                text(
-                    "INSERT INTO schema_version (version, applied_at, description) "
-                    "SELECT :version, :now, :description "
-                    "WHERE NOT EXISTS (SELECT 1 FROM schema_version)"
-                ),
-                {
-                    "version": CURRENT_SCHEMA_VERSION,
-                    "now": self.utc_now_text(),
-                    "description": "Initial schema with workflow_definitions",
-                },
-            )
-            await session.commit()
+
+        async def insert_if_empty() -> None:
+            async with AsyncSession(self.engine) as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO schema_version (version, applied_at, description) "
+                        "SELECT :version, :now, :description "
+                        "WHERE NOT EXISTS (SELECT 1 FROM schema_version)"
+                    ),
+                    {
+                        "version": CURRENT_SCHEMA_VERSION,
+                        "now": self.utc_now_text(),
+                        "description": "Initial schema with workflow_definitions",
+                    },
+                )
+                await session.commit()
+
+        await self._retry_idempotent(insert_if_empty)
 
     async def create_instance(self, instance_id: str, *args: Any, **kwargs: Any) -> None:
         """
@@ -291,21 +297,28 @@ class RqliteStorage(SQLAlchemyStorage):
 
         The base class looks for the row and then inserts it, so two nodes that start the same
         workflow for the first time both see "missing" and the second INSERT fails on the
-        primary key. ``ON CONFLICT DO UPDATE`` leaves nothing between the check and the write.
+        primary key. ``ON CONFLICT DO UPDATE`` leaves nothing between the check and the write,
+        and a repeat leaves the same row, so a lost response is retried.
         """
-        session = self._get_session_for_operation()
-        async with self._session_scope(session) as session:
-            await session.execute(
-                sqlite_insert(WorkflowDefinition)
-                .values(
-                    workflow_name=workflow_name, source_hash=source_hash, source_code=source_code
+
+        async def upsert() -> None:
+            session = self._get_session_for_operation()
+            async with self._session_scope(session) as session:
+                await session.execute(
+                    sqlite_insert(WorkflowDefinition)
+                    .values(
+                        workflow_name=workflow_name,
+                        source_hash=source_hash,
+                        source_code=source_code,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["workflow_name", "source_hash"],
+                        set_={"source_code": source_code},
+                    )
                 )
-                .on_conflict_do_update(
-                    index_elements=["workflow_name", "source_hash"],
-                    set_={"source_code": source_code},
-                )
-            )
-            await self._commit_if_not_in_transaction(session)
+                await self._commit_if_not_in_transaction(session)
+
+        await self._retry_idempotent(upsert)
 
     # ------------------------------------------------------------------
     # Workflow locks: one conditional UPDATE decides the winner

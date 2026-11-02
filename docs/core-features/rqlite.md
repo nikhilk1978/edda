@@ -86,7 +86,7 @@ A write can be applied by the cluster while its answer never arrives. The worker
 - **Batches** (activity commits, atomic operations) carry a marker row. After a lost response the driver looks the marker up: present means the batch was applied and the commit succeeded. This is what stops Edda from repeating an activity whose history row already exists.
 - **Lock claims** ask the cluster whether this worker now holds the lock, and claim again if not. A claim only succeeds on a free or expired lock, so repeating it is safe.
 - **Reads** are repeated on a dropped connection (a read changes nothing).
-- **Idempotent writes** (setting a status, deleting a subscription, releasing a lock) are repeated once.
+- **Idempotent writes** (setting a status, deleting a subscription, releasing a lock, and the start-up upserts of the schema version and workflow definitions) are repeated, up to three attempts in all.
 - **`create_instance`** checks whether the row exists before repeating.
 - **Counters and other inserts are not repeated**: `mark_outbox_failed` adds 1 to a counter, and `add_outbox_event`, `append_history` and `publish_to_channel` outside a transaction would collide. They raise.
 
