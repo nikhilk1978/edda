@@ -51,6 +51,7 @@ class EddaApp:
         broker_url: str | None = None,
         hooks: WorkflowHooks | None = None,
         default_retry_policy: "RetryPolicy | None" = None,
+        lock_refresh_interval: float | None = None,
         message_retention_days: int = 7,
         # Connection pool settings (ignored for SQLite)
         pool_size: int = 5,
@@ -76,6 +77,9 @@ class EddaApp:
             outbox_enabled: Enable transactional outbox pattern
             broker_url: Broker URL for outbox publishing. Required if outbox_enabled=True.
             hooks: Optional WorkflowHooks implementation for observability
+            lock_refresh_interval: Seconds between renewals of a running workflow's lock (None = never
+                renew). Lets ``lock_timeout_seconds`` be short, so a dead worker's workflows are
+                picked up quickly without a live one being taken over. See ``ReplayEngine``.
             default_retry_policy: Default retry policy for all activities.
                                  If None, uses DEFAULT_RETRY_POLICY (5 attempts, exponential backoff).
                                  Can be overridden per-activity using @activity(retry_policy=...).
@@ -116,6 +120,7 @@ class EddaApp:
             raise ValueError("broker_url is required when outbox_enabled=True")
         self.hooks = hooks
         self.default_retry_policy = default_retry_policy
+        self.lock_refresh_interval = lock_refresh_interval
         self._message_retention_days = message_retention_days
 
         # Connection pool settings
@@ -185,7 +190,7 @@ class EddaApp:
         """
         Create storage backend from database URL.
 
-        Supports SQLite, PostgreSQL, and MySQL via SQLAlchemy.
+        Supports SQLite, PostgreSQL, MySQL, and rqlite via SQLAlchemy.
 
         Args:
             db_url: Database URL in SQLAlchemy format
@@ -193,6 +198,7 @@ class EddaApp:
                 - SQLite: "sqlite:///saga.db" or "sqlite+aiosqlite:///saga.db"
                 - PostgreSQL: "postgresql+asyncpg://user:pass@localhost/dbname"
                 - MySQL: "mysql+aiomysql://user:pass@localhost/dbname"
+                - rqlite: "rqlite://user:pass@localhost:4001" ("rqlites://" for HTTPS)
 
         Returns:
             SQLAlchemyStorage instance
@@ -223,6 +229,12 @@ class EddaApp:
                     "pool_pre_ping": self._pool_pre_ping,
                 }
             )
+
+        # rqlite: a SQLite cluster reached over HTTP (atomic claims instead of row locks)
+        if db_url.startswith(("rqlite://", "rqlites://")):
+            from edda.storage.rqlite_storage import RqliteStorage, create_rqlite_engine
+
+            return RqliteStorage(create_rqlite_engine(db_url, **engine_kwargs))
 
         # Create async engine
         engine = create_async_engine(db_url, **engine_kwargs)
@@ -414,6 +426,7 @@ class EddaApp:
             worker_id=self.worker_id,
             hooks=self.hooks,
             default_retry_policy=self.default_retry_policy,
+            lock_refresh_interval=self.lock_refresh_interval,
         )
 
         # Set global replay engine for workflow decorator

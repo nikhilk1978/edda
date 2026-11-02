@@ -45,6 +45,7 @@ class ReplayEngine:
         worker_id: str,
         hooks: Any = None,
         default_retry_policy: Any = None,
+        lock_refresh_interval: float | None = None,
     ):
         """
         Initialize the replay engine.
@@ -55,12 +56,19 @@ class ReplayEngine:
             worker_id: Unique worker ID for this process
             hooks: Optional WorkflowHooks implementation for observability
             default_retry_policy: Default retry policy for all activities (RetryPolicy or None)
+            lock_refresh_interval: If set, renew a running workflow's lock every this many seconds.
+                Without it the lock is never renewed, so a workflow that runs longer than its
+                ``lock_timeout_seconds`` looks stale to the auto-resume loop and can be taken over
+                while it is still running. That forces a long timeout, and a long timeout is how
+                long a dead worker's workflows wait before anyone resumes them. Renewing lets the
+                timeout be short. Choose an interval well under it (a third is typical).
         """
         self.storage = storage
         self.service_name = service_name
         self.worker_id = worker_id
         self.hooks = hooks
         self.default_retry_policy = default_retry_policy
+        self.lock_refresh_interval = lock_refresh_interval
 
     def _prepare_workflow_input(
         self,
@@ -199,7 +207,9 @@ class ReplayEngine:
         )
 
         # Execute the workflow with distributed lock
-        async with workflow_lock(self.storage, instance_id, self.worker_id):
+        async with workflow_lock(
+            self.storage, instance_id, self.worker_id, refresh_interval=self.lock_refresh_interval
+        ):
             # Create context for new execution
             ctx = WorkflowContext(
                 instance_id=instance_id,
@@ -432,7 +442,12 @@ class ReplayEngine:
             await self._execute_workflow_logic(instance, instance_id, workflow_func)
         else:
             # Acquire lock for this workflow
-            async with workflow_lock(self.storage, instance_id, self.worker_id):
+            async with workflow_lock(
+                self.storage,
+                instance_id,
+                self.worker_id,
+                refresh_interval=self.lock_refresh_interval,
+            ):
                 await self._execute_workflow_logic(instance, instance_id, workflow_func)
 
     async def _execute_workflow_logic(
@@ -709,7 +724,12 @@ class ReplayEngine:
         )
 
         # Execute the new workflow with distributed lock
-        async with workflow_lock(self.storage, new_instance_id, self.worker_id):
+        async with workflow_lock(
+            self.storage,
+            new_instance_id,
+            self.worker_id,
+            refresh_interval=self.lock_refresh_interval,
+        ):
             # Create context for new execution
             ctx = WorkflowContext(
                 instance_id=new_instance_id,
@@ -846,7 +866,9 @@ class ReplayEngine:
             raise ValueError(f"Workflow instance {instance_id} not found")
 
         # Acquire lock
-        async with workflow_lock(self.storage, instance_id, self.worker_id):
+        async with workflow_lock(
+            self.storage, instance_id, self.worker_id, refresh_interval=self.lock_refresh_interval
+        ):
             # Create context
             ctx = WorkflowContext(
                 instance_id=instance_id,

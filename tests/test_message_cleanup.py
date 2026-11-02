@@ -3,10 +3,16 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 
 from edda.app import EddaApp
 from edda.storage.sqlalchemy_storage import ChannelMessage
+
+
+async def _latest_message_id(storage) -> int:
+    """Id of the newest channel message, whatever the autoincrement counter has reached."""
+    async with storage.engine.connect() as conn:
+        return (await conn.execute(select(func.max(ChannelMessage.id)))).scalar_one()
 
 
 class TestMessageCleanup:
@@ -109,11 +115,15 @@ class TestMessageCleanup:
             metadata=None,
         )
 
-        # Set this message to be old
+        # Set this message to be old. Look the id up: on a database that is reused between tests
+        # (a shared rqlite cluster) the autoincrement counter does not restart at 1.
+        first_id = await _latest_message_id(db_storage)
         async with db_storage.engine.begin() as conn:
             old_time = datetime.now(UTC) - timedelta(days=8)
             await conn.execute(
-                update(ChannelMessage).where(ChannelMessage.id == 1).values(published_at=old_time)
+                update(ChannelMessage)
+                .where(ChannelMessage.id == first_id)
+                .values(published_at=old_time)
             )
 
         # Create another old message (10 days old)
@@ -124,10 +134,13 @@ class TestMessageCleanup:
         )
 
         # Set this message to be older
+        second_id = await _latest_message_id(db_storage)
         async with db_storage.engine.begin() as conn:
             older_time = datetime.now(UTC) - timedelta(days=10)
             await conn.execute(
-                update(ChannelMessage).where(ChannelMessage.id == 2).values(published_at=older_time)
+                update(ChannelMessage)
+                .where(ChannelMessage.id == second_id)
+                .values(published_at=older_time)
             )
 
         # Create a recent message (today)

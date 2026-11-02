@@ -823,7 +823,18 @@ class SQLAlchemyStorage:
         async with self.engine.begin() as conn:
             await conn.run_sync(_run_constraint_migration)
 
-    def _get_session_for_operation(self, is_lock_operation: bool = False) -> AsyncSession:
+    @property
+    def _atomic_engine(self) -> AsyncEngine:
+        """Engine for a unit of work that must commit all-or-nothing outside an Edda transaction.
+
+        Every backend with real transactions already gets that from ``self.engine``. A backend
+        without them (rqlite) returns an engine that batches the unit into one atomic request.
+        """
+        return self.engine
+
+    def _get_session_for_operation(
+        self, is_lock_operation: bool = False, *, atomic: bool = False  # noqa: ARG002
+    ) -> AsyncSession:
         """
         Get the appropriate session for an operation.
 
@@ -832,6 +843,9 @@ class SQLAlchemyStorage:
 
         Args:
             is_lock_operation: True if this is a lock acquisition/release operation
+            atomic: True if the operation's writes must commit all-or-nothing and it needs no row
+                count or read-your-writes in between. Only matters to a backend whose plain
+                sessions do not give that (see ``_atomic_engine``).
 
         Returns:
             AsyncSession to use for the operation
@@ -977,6 +991,10 @@ class SQLAlchemyStorage:
     # Transaction Management Methods
     # -------------------------------------------------------------------------
 
+    def _new_transaction_session(self) -> AsyncSession:
+        """Create the session that backs a top-level transaction (override per backend)."""
+        return AsyncSession(self.engine, expire_on_commit=False)
+
     async def begin_transaction(self) -> None:
         """
         Begin a new transaction.
@@ -988,7 +1006,7 @@ class SQLAlchemyStorage:
 
         if ctx is None:
             # First transaction - create new context with session
-            session = AsyncSession(self.engine, expire_on_commit=False)
+            session = self._new_transaction_session()
             ctx = TransactionContext(session=session)
             _transaction_context.set(ctx)
 
@@ -1950,7 +1968,7 @@ class SQLAlchemyStorage:
         """
         import base64
 
-        session = self._get_session_for_operation()
+        session = self._get_session_for_operation(atomic=True)
         async with self._session_scope(session) as session:
             # Get all history entries for this instance
             result = await session.execute(
@@ -2121,7 +2139,7 @@ class SQLAlchemyStorage:
 
         Note: Uses LOCK operation session (separate from external session).
         """
-        session = self._get_session_for_operation(is_lock_operation=True)
+        session = self._get_session_for_operation(is_lock_operation=True, atomic=True)
         async with self._session_scope(session) as session, session.begin():
             # 1. Verify we hold the lock (sanity check)
             result = await session.execute(
@@ -2679,7 +2697,7 @@ class SQLAlchemyStorage:
 
         try:
             # Step 3-5: Deliver message atomically
-            session = self._get_session_for_operation()
+            session = self._get_session_for_operation(atomic=True)
             async with self._session_scope(session) as session:
                 # Re-check subscription (may have been removed by another worker)
                 result = await session.execute(
@@ -3212,7 +3230,7 @@ class SQLAlchemyStorage:
             RuntimeError: If the worker doesn't hold the lock
             ValueError: If workflow is not subscribed to the channel
         """
-        async with self.engine.begin() as conn:
+        async with self._atomic_engine.begin() as conn:
             session = AsyncSession(bind=conn, expire_on_commit=False)
 
             # Verify lock ownership
@@ -3524,7 +3542,7 @@ class SQLAlchemyStorage:
                 return None
 
             try:
-                async with self.engine.begin() as conn:
+                async with self._atomic_engine.begin() as conn:
                     session = AsyncSession(bind=conn, expire_on_commit=False)
 
                     # Get subscription info

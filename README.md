@@ -215,6 +215,8 @@ pip install "git+https://github.com/i2y/edda.git[postgresql,viewer]"
   - **Recommended for production**
 - **MySQL**: Add `--extra mysql` for `aiomysql` driver
   - **Recommended for production**
+- **rqlite**: Included (HTTP driver, no extra needed) - `db_url="rqlite://host:4001"`
+  - Distributed SQLite cluster; **experimental** (see [docs](docs/core-features/rqlite.md))
 - **Viewer UI**: Add `--extra viewer` for workflow visualization
 
 ### Database Selection Guide
@@ -224,8 +226,9 @@ pip install "git+https://github.com/i2y/edda.git[postgresql,viewer]"
 | **SQLite** | Development, testing, single-process deployments | ❌ No | ⚠️ Limited | Supports multiple async workers within one process, but not multiple processes/pods (K8s, Docker Compose with multiple replicas) |
 | **PostgreSQL** | Production, multi-process/multi-pod systems | ✅ Yes | ✅ Yes | **Recommended for production** - Full support for database-based exclusive control and concurrent workflows |
 | **MySQL** | Production with existing MySQL infrastructure | ✅ Yes | ✅ Yes | Suitable for production - Good choice if you already use MySQL |
+| **rqlite** | Multi-pod deployments without a database server or shared filesystem | ✅ Yes | ⚠️ Experimental | Distributed SQLite over HTTP. Claims use atomic `UPDATE`s instead of row locks, and transactions are applied as atomic batches. Verified against an in-process model of rqlite, not yet a real cluster. See [rqlite](docs/core-features/rqlite.md) |
 
-**Important**: For multi-process or multi-pod deployments (K8s, Docker Compose with multiple replicas, etc.), you **must** use PostgreSQL or MySQL. SQLite supports multiple async workers within a single process, but its table-level locking makes it unsuitable for multi-process/multi-pod scenarios.
+**Important**: For multi-process or multi-pod deployments (K8s, Docker Compose with multiple replicas, etc.), you **must** use PostgreSQL, MySQL, or rqlite. SQLite supports multiple async workers within a single process, but its table-level locking makes it unsuitable for multi-process/multi-pod scenarios.
 
 > **Tip**: For PostgreSQL, install the `postgres-notify` extra for near-instant event delivery using LISTEN/NOTIFY instead of polling.
 

@@ -46,7 +46,8 @@ def detect_db_type(engine: AsyncEngine) -> str:
     """
     url = str(engine.url)
 
-    if "sqlite" in url:
+    # rqlite is SQLite underneath, so it uses the sqlite migrations.
+    if "sqlite" in url or url.startswith("rqlite"):
         return "sqlite"
     elif "postgresql" in url or "postgres" in url:
         return "postgresql"
@@ -62,7 +63,8 @@ def find_migrations_dir() -> Path | None:
 
     Searches in the following order:
     1. Package-bundled migrations (edda/migrations/)
-    2. Development environment (schema/db/migrations/)
+    2. The schema submodule of the checkout this package runs from (editable installs)
+    3. Development environment (schema/db/migrations/ under the current directory)
 
     Returns:
         Path to migrations directory or None if not found
@@ -72,7 +74,14 @@ def find_migrations_dir() -> Path | None:
     if pkg_dir.exists():
         return pkg_dir
 
-    # 2. Development environment (schema submodule)
+    # 2. Editable install: the wheel's bundled copy does not exist, but the checkout's
+    #    schema submodule does. Found relative to this file, so the working directory of
+    #    the consuming project does not matter. (Absent for regular wheel installs.)
+    checkout_dir = Path(__file__).resolve().parents[2] / "schema" / "db" / "migrations"
+    if checkout_dir.exists():
+        return checkout_dir
+
+    # 3. Development environment (schema submodule in the current directory)
     schema_dir = Path.cwd() / "schema" / "db" / "migrations"
     if schema_dir.exists():
         return schema_dir

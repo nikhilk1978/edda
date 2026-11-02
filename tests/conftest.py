@@ -34,18 +34,87 @@ def get_database_urls() -> dict[str, str]:
     }
 
 
-@pytest_asyncio.fixture(params=["sqlite", "postgresql", "mysql"])
+# Tables in the order they can be emptied (children first, for foreign keys).
+EDDA_TABLES = (
+    "channel_message_claims",
+    "channel_delivery_cursors",
+    "channel_messages",
+    "channel_subscriptions",
+    "workflow_timer_subscriptions",
+    "workflow_group_memberships",
+    "workflow_compensations",
+    "workflow_history_archive",
+    "workflow_history",
+    "outbox_events",
+    "workflow_instances",
+    "workflow_definitions",
+    "system_locks",
+)
+
+
+async def open_rqlite_storage():
+    """A migrated ``RqliteStorage`` plus a ``cleanup`` coroutine function.
+
+    Uses the real cluster in EDDA_TEST_RQLITE_URL if set (its rows are deleted afterwards, so use a
+    dedicated one), otherwise a fresh in-process fake (tests/rqlite_fake.py) per call.
+    """
+    from edda.storage.rqlite_storage import RqliteStorage, create_rqlite_engine
+
+    real_url = os.getenv("EDDA_TEST_RQLITE_URL")
+    fake = None
+    if real_url:
+        engine = create_rqlite_engine(real_url)
+    else:
+        from tests.rqlite_fake import FakeRqlite
+
+        fake = FakeRqlite()
+        engine = create_rqlite_engine(
+            "rqlite://localhost:4001", connect_args={"transport": fake.transport()}
+        )
+
+    await apply_dbmate_migrations(engine, SCHEMA_DIR)
+    storage = RqliteStorage(engine)
+    await storage.upsert_workflow_definition(
+        workflow_name="test_workflow",
+        source_hash="abc123def456",
+        source_code="async def test_workflow(ctx): pass",
+    )
+
+    async def cleanup() -> None:
+        if real_url:
+            # One atomic request: on a real cluster every request is a network round trip.
+            async with AsyncSession(storage._atomic_engine) as session:
+                for table in EDDA_TABLES:
+                    await session.execute(text(f"DELETE FROM {table}"))
+                # Let autoincrement ids start again, as they do on a fresh database.
+                await session.execute(text("DELETE FROM sqlite_sequence"))
+                await session.commit()
+        await storage.close()
+        if fake is not None:
+            fake.close()
+
+    return storage, cleanup
+
+
+@pytest_asyncio.fixture(params=["sqlite", "postgresql", "mysql", "rqlite"])
 async def db_storage(request):
     """
-    Parametrized fixture that creates storage for SQLite, PostgreSQL, and MySQL.
+    Parametrized fixture that creates storage for SQLite, PostgreSQL, MySQL, and rqlite.
 
-    This fixture will run each test 3 times (once for each database).
-    Uses Testcontainers for PostgreSQL and MySQL.
+    This fixture will run each test 4 times (once for each database).
+    Uses Testcontainers for PostgreSQL and MySQL. rqlite runs against an in-process
+    fake cluster (tests/rqlite_fake.py), or a real cluster when EDDA_TEST_RQLITE_URL
+    is set (e.g. rqlite://localhost:4001); its tables are emptied afterwards.
     Schema is created using dbmate migration files from schema/db/migrations/.
     """
     db_type = request.param
 
-    if db_type == "sqlite":
+    if db_type == "rqlite":
+        storage, cleanup = await open_rqlite_storage()
+        yield storage
+        await cleanup()
+
+    elif db_type == "sqlite":
         # SQLite: in-memory database
         # Use StaticPool to ensure all connections share the same in-memory database
         engine = create_async_engine(
@@ -172,7 +241,17 @@ async def db_storage(request):
 
 @pytest_asyncio.fixture
 async def sqlite_storage():
-    """Create an in-memory SQLite storage for testing."""
+    """Create an in-memory SQLite storage for testing.
+
+    EDDA_TEST_STORAGE=rqlite runs every test that uses this fixture on ``RqliteStorage`` instead
+    (the in-process fake, or the cluster in EDDA_TEST_RQLITE_URL; see ``open_rqlite_storage``).
+    """
+    if os.getenv("EDDA_TEST_STORAGE") == "rqlite":
+        storage, cleanup = await open_rqlite_storage()
+        yield storage
+        await cleanup()
+        return
+
     # Use StaticPool to ensure all connections share the same in-memory database
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",

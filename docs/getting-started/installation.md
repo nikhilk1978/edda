@@ -50,6 +50,7 @@ uv add edda-framework --extra postgresql --extra mysql --extra viewer
 - **Base**: SQLite support via `aiosqlite` (always included)
 - **postgresql**: `asyncpg` driver for PostgreSQL
 - **mysql**: `aiomysql` driver for MySQL
+- **rqlite**: no extra needed; the HTTP driver is built in (`db_url="rqlite://host:4001"`)
 - **viewer**: `nicegui` for workflow visualization UI
 - **postgres-notify**: `asyncpg` driver for PostgreSQL LISTEN/NOTIFY instant notifications
 

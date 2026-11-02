@@ -168,6 +168,7 @@ uv add edda-framework --extra postgresql --extra mysql --extra viewer
 - **SQLite**: Included by default (via `aiosqlite`) - Single-machine deployments only (not for distributed systems)
 - **PostgreSQL**: Add `--extra postgresql` for `asyncpg` driver - **Recommended for production** (distributed deployments)
 - **MySQL**: Add `--extra mysql` for `aiomysql` driver - Production (distributed deployments)
+- **rqlite**: Included (HTTP driver, no extra needed) - Distributed SQLite cluster, no shared filesystem or database server; see [rqlite](core-features/rqlite.md)
 - **Viewer UI**: Add `--extra viewer` for workflow visualization
 
 **Important**: For distributed execution (multiple worker pods/containers), you **must** use PostgreSQL or MySQL. SQLite's single-writer limitation makes it unsuitable for multi-pod deployments.

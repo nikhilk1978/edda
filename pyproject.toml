@@ -105,6 +105,15 @@ packages = ["edda"]
 [tool.hatch.build.targets.sdist.force-include]
 "schema/db/migrations" = "edda/migrations"
 
+[tool.uv]
+# When another project depends on a checkout of this repo by path, uv rebuilds it only when
+# pyproject.toml changes. List the sources too, so such a consumer never runs a stale copy.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "edda/**/*.py" },
+    { file = "schema/db/migrations/**/*.sql" },
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

@@ -14,6 +14,12 @@ import uuid
 import pytest
 
 
+def _is_plain_sqlite(storage) -> bool:
+    """rqlite is "sqlite" to SQLAlchemy, but it claims events with atomic UPDATEs."""
+    dialect = storage.engine.dialect
+    return dialect.name == "sqlite" and dialect.driver != "httpx"
+
+
 @pytest.mark.asyncio
 async def test_concurrent_fetch_no_duplicates(db_storage):
     """Test that multiple workers don't fetch the same events.
@@ -22,8 +28,8 @@ async def test_concurrent_fetch_no_duplicates(db_storage):
     In concurrent systems, a single poll might not fetch all events if some
     are locked by other workers. Workers retry until all events are processed.
     """
-    # Skip for SQLite (SKIP LOCKED not supported)
-    if db_storage.engine.dialect.name == "sqlite":
+    # Skip for plain SQLite (SKIP LOCKED not supported)
+    if _is_plain_sqlite(db_storage):
         pytest.skip("SQLite does not support SKIP LOCKED")
 
     storage = db_storage
@@ -79,8 +85,8 @@ async def test_parallel_publishing(db_storage):
     may not fetch all events if some are locked by other workers. Workers retry
     until all events are processed, matching the OutboxRelayer._poll_loop() behavior.
     """
-    # Skip for SQLite (SKIP LOCKED not supported)
-    if db_storage.engine.dialect.name == "sqlite":
+    # Skip for plain SQLite (SKIP LOCKED not supported)
+    if _is_plain_sqlite(db_storage):
         pytest.skip("SQLite does not support SKIP LOCKED")
 
     storage = db_storage
@@ -134,8 +140,8 @@ async def test_large_scale_concurrent_processing(db_storage):
     This test simulates a realistic scenario where workers poll in a loop.
     In concurrent systems, workers retry until all events are processed.
     """
-    # Skip for SQLite (SKIP LOCKED not supported)
-    if db_storage.engine.dialect.name == "sqlite":
+    # Skip for plain SQLite (SKIP LOCKED not supported)
+    if _is_plain_sqlite(db_storage):
         pytest.skip("SQLite does not support SKIP LOCKED")
 
     storage = db_storage
@@ -182,8 +188,8 @@ async def test_large_scale_concurrent_processing(db_storage):
 @pytest.mark.asyncio
 async def test_retry_failed_events_no_duplicate(db_storage):
     """Test that failed events can be retried without duplicates."""
-    # Skip for SQLite (SKIP LOCKED not supported)
-    if db_storage.engine.dialect.name == "sqlite":
+    # Skip for plain SQLite (SKIP LOCKED not supported)
+    if _is_plain_sqlite(db_storage):
         pytest.skip("SQLite does not support SKIP LOCKED")
 
     storage = db_storage
