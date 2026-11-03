@@ -847,13 +847,14 @@ class ReceivedEvent:
     extensions: dict[str, Any] = field(default_factory=dict)
 
 
-class EventTimeoutError(Exception):
+class EventTimeoutError(TimeoutError):
     """
     Exception raised when wait_event() times out.
 
     This exception is raised when an event does not arrive within the
     specified timeout period. The workflow can catch this exception to
-    handle timeout scenarios gracefully.
+    handle timeout scenarios gracefully. It is a ``TimeoutError``, so code
+    that catches ``TimeoutError`` around ``wait_event`` also catches it.
 
     Example:
         try:
@@ -972,13 +973,19 @@ async def wait_event(
     if subscription is None:
         await subscribe(ctx, event_type, mode="broadcast")
 
-    # Use receive() with event_type as channel
-    msg = await receive(
-        ctx,
-        channel=event_type,
-        timeout_seconds=timeout_seconds,
-        message_id=event_id,
-    )
+    # Use receive() with event_type as channel. receive() reports a timeout as a plain
+    # TimeoutError, live or replayed from history; wait_event's contract is EventTimeoutError.
+    try:
+        msg = await receive(
+            ctx,
+            channel=event_type,
+            timeout_seconds=timeout_seconds,
+            message_id=event_id,
+        )
+    except EventTimeoutError:
+        raise
+    except TimeoutError as exc:
+        raise EventTimeoutError(event_type, timeout_seconds or 0) from exc
 
     # Convert ChannelMessage to ReceivedEvent with CloudEvents metadata
     return _convert_channel_message_to_received_event(msg, event_type, model)
