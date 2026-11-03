@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from edda import WorkflowContext, activity, workflow
+from edda.locking import workflow_lock
 from edda.replay import ReplayEngine
 
 LOCK_TIMEOUT_SECONDS = 1
@@ -83,3 +84,34 @@ async def test_with_refresh_a_live_workflow_is_left_alone(db_storage):
     instance = await db_storage.get_instance(instance_id)
     assert instance["status"] == "completed"
     assert instance["locked_by"] is None  # released at the end, as ever
+
+
+class FlakyRefreshStorage:
+    """Grants the lock, fails the first refresh the way a dropped connection does, then renews."""
+
+    def __init__(self) -> None:
+        self.refreshes = 0
+        self.released = False
+
+    async def try_acquire_lock(self, instance_id, worker_id, timeout_seconds) -> bool:
+        return True
+
+    async def refresh_lock(self, instance_id, worker_id) -> bool:
+        self.refreshes += 1
+        if self.refreshes == 1:
+            raise ConnectionError("connection dropped")
+        return True
+
+    async def release_lock(self, instance_id, worker_id) -> None:
+        self.released = True
+
+
+async def test_a_failed_refresh_is_retried_and_the_lock_is_still_released():
+    """One failed renewal must not end renewal: the lock would lapse and a peer would rerun the workflow."""
+    storage = FlakyRefreshStorage()
+
+    async with workflow_lock(storage, "inst-1", "owner", refresh_interval=0.01):
+        await asyncio.sleep(0.15)
+
+    assert storage.refreshes >= 3  # it kept renewing after the failure
+    assert storage.released  # and the workflow's exit neither raised nor skipped the release

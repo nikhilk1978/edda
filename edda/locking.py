@@ -180,8 +180,19 @@ async def _refresh_lock_periodically(
         while True:
             await asyncio.sleep(interval)
 
-            # Refresh the lock
-            success = await storage.refresh_lock(instance_id, worker_id)
+            # A failed attempt (a dropped connection, a database failover) is retried at the
+            # next interval. Stopping would let the lock lapse while the workflow still runs,
+            # and another worker would then run it a second time.
+            try:
+                success = await storage.refresh_lock(instance_id, worker_id)
+            except Exception as exc:
+                logger.warning(
+                    "Refreshing the lock for instance %s failed (%s); retrying in %ss",
+                    instance_id,
+                    exc,
+                    interval,
+                )
+                continue
             if not success:
                 # Lock was lost - this shouldn't happen in normal operation
                 raise RuntimeError(
